@@ -5,7 +5,6 @@ import {
   RotateCcw,
   Download,
   Upload,
-  Database,
   Check,
   X,
   Pencil,
@@ -40,7 +39,6 @@ interface SchedulesViewProps {
     schedules?: ScheduleSlot[];
     settings?: PatientSettings;
   }) => Promise<void>;
-  onLoadSampleData: () => Promise<void>;
   onClearAllEntries: () => Promise<void>;
 }
 
@@ -54,7 +52,6 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
   onUpdateSettings,
   entries,
   onImportBackup,
-  onLoadSampleData,
   onClearAllEntries,
 }) => {
   const orderedSchedules = sortSchedulesAsc(schedules);
@@ -622,24 +619,7 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
               />
             </div>
 
-            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                disabled={busyAction}
-                onClick={async () => {
-                  setBusyAction(true);
-                  try {
-                    await onLoadSampleData();
-                    showFeedback('Dados clínicos de demonstração (14 dias) adicionados.');
-                  } finally {
-                    setBusyAction(false);
-                  }
-                }}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-50 transition-colors"
-              >
-                <Database className="h-3.5 w-3.5" />
-                <span>Carregar Exemplo (14d)</span>
-              </button>
+            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-end gap-2">
 
               {confirmClearData ? (
                 <div className="flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-2.5 py-1">

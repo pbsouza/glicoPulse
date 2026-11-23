@@ -20,7 +20,6 @@ import {
 import {
   DEFAULT_SCHEDULES,
   DEFAULT_SETTINGS,
-  generateSampleEntries,
 } from './utils/glucoseUtils';
 import {
   batchSeedEntries,
@@ -291,11 +290,6 @@ export default function App() {
     await saveUserSettings(uid, next);
   };
 
-  const handleLoadSampleData = async () => {
-    const sample = generateSampleEntries(schedules);
-    await batchSeedEntries(uid, sample);
-  };
-
   const handleClearAllEntries = async () => {
     await clearAllUserEntries(uid, entries);
   };
@@ -508,7 +502,6 @@ export default function App() {
             onUpdateSettings={handleUpdateSettings}
             entries={entries}
             onImportBackup={handleImportBackup}
-            onLoadSampleData={handleLoadSampleData}
             onClearAllEntries={handleClearAllEntries}
           />
         )}
