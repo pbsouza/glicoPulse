@@ -38,6 +38,8 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
   const [includeChart, setIncludeChart] = useState(true);
   const [includeMatrix, setIncludeMatrix] = useState(true);
   const [includeChronologicalList, setIncludeChronologicalList] = useState(true);
+  // null = all measurements selected
+  const [selectedSlotIds, setSelectedSlotIds] = useState<string[] | null>(null);
 
   const [exportFeedback, setExportFeedback] = useState<string | null>(null);
 
@@ -47,16 +49,87 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
     setEndDate(todayStr);
   };
 
-  const filteredEntries = useMemo(() => {
-    return sortEntriesDesc(entries).filter(
-      (e) => e.date >= startDate && e.date <= endDate
-    );
-  }, [entries, startDate, endDate]);
-
   const activeSchedules = useMemo(
     () => sortSchedulesAsc(schedules).filter((s) => s.enabled),
     [schedules]
   );
+
+  const slotOptions = useMemo(
+    () => [
+      ...activeSchedules.map((s) => ({
+        id: s.id,
+        label: s.label,
+        time: s.time,
+        slot: s as ScheduleSlot | undefined,
+      })),
+      {
+        id: 'other',
+        label: 'Avulso',
+        time: 'Fora da grade',
+        slot: undefined,
+      },
+    ],
+    [activeSchedules]
+  );
+
+  const allSlotIds = useMemo(() => slotOptions.map((o) => o.id), [slotOptions]);
+
+  const effectiveSelectedIds = useMemo(
+    () => (selectedSlotIds === null ? allSlotIds : selectedSlotIds),
+    [selectedSlotIds, allSlotIds]
+  );
+
+  const selectedSlotSet = useMemo(
+    () => new Set(effectiveSelectedIds),
+    [effectiveSelectedIds]
+  );
+
+  const isCustomSlotFilter =
+    selectedSlotIds !== null && effectiveSelectedIds.length < allSlotIds.length;
+
+  const toggleSlotSelection = (slotId: string) => {
+    const nextSet = new Set(effectiveSelectedIds);
+    if (nextSet.has(slotId)) {
+      nextSet.delete(slotId);
+    } else {
+      nextSet.add(slotId);
+    }
+    if (nextSet.size === allSlotIds.length && allSlotIds.every((id) => nextSet.has(id))) {
+      setSelectedSlotIds(null);
+    } else {
+      setSelectedSlotIds(allSlotIds.filter((id) => nextSet.has(id)));
+    }
+  };
+
+  const filteredEntries = useMemo(() => {
+    return sortEntriesDesc(entries).filter(
+      (e) =>
+        e.date >= startDate &&
+        e.date <= endDate &&
+        selectedSlotSet.has(e.slotId)
+    );
+  }, [entries, startDate, endDate, selectedSlotSet]);
+
+  const previewMatrixColumns = useMemo(() => {
+    const cols = activeSchedules
+      .filter((s) => selectedSlotSet.has(s.id))
+      .map((s) => ({
+        id: s.id,
+        label: s.label,
+        time: s.time,
+        slot: s as ScheduleSlot | undefined,
+      }));
+    const hasOtherEntries = filteredEntries.some((e) => e.slotId === 'other');
+    if (selectedSlotSet.has('other') && hasOtherEntries) {
+      cols.push({
+        id: 'other',
+        label: 'Avulso',
+        time: 'Fora grade',
+        slot: undefined,
+      });
+    }
+    return cols;
+  }, [activeSchedules, selectedSlotSet, filteredEntries]);
 
   const stats = useMemo(
     () => computeGlucoseStats(filteredEntries, schedules, settings),
@@ -70,6 +143,7 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
   }, [filteredEntries]);
 
   const handleDownloadPdf = () => {
+    if (effectiveSelectedIds.length === 0) return;
     const { filename, count } = generateGlucosePdfReport(entries, schedules, settings, {
       startDate,
       endDate,
@@ -77,6 +151,7 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
       includeStats,
       includeMatrix,
       includeChronologicalList,
+      selectedSlotIds: isCustomSlotFilter ? effectiveSelectedIds : undefined,
     });
     setExportFeedback(`PDF "${filename}" gerado com ${count} medições.`);
     setTimeout(() => setExportFeedback(null), 5000);
@@ -150,6 +225,63 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
           </div>
         </div>
 
+        {/* Measurement Slots Multi-Select */}
+        <div className="space-y-2 pt-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-700">
+              Medições Incluídas ({effectiveSelectedIds.length}/{allSlotIds.length})
+            </span>
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setSelectedSlotIds(null)}
+                className="font-semibold text-teal-700 hover:text-teal-800 transition-colors"
+              >
+                Todas
+              </button>
+              <span aria-hidden="true" className="text-slate-300">|</span>
+              <button
+                type="button"
+                onClick={() => setSelectedSlotIds([])}
+                className="font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+              >
+                Limpar
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            {slotOptions.map((opt) => {
+              const checked = selectedSlotSet.has(opt.id);
+              return (
+                <label
+                  key={opt.id}
+                  className={`flex min-h-[40px] cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-1.5 transition-colors ${
+                    checked
+                      ? 'border-teal-700/40 bg-teal-50/70 text-slate-900'
+                      : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleSlotSelection(opt.id)}
+                    className="h-4 w-4 rounded border-slate-300 text-teal-700 focus:ring-teal-700 shrink-0"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                    {opt.label}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {effectiveSelectedIds.length === 0 && (
+            <p className="text-xs font-medium text-rose-700">
+              Selecione ao menos uma medição para exportar o PDF.
+            </p>
+          )}
+        </div>
+
         {/* Section Checkboxes */}
         <div className="space-y-2.5 pt-1">
           <span className="block text-xs font-semibold text-slate-700">
@@ -195,8 +327,9 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
         <div className="pt-2 space-y-2.5">
           <button
             type="button"
+            disabled={effectiveSelectedIds.length === 0}
             onClick={handleDownloadPdf}
-            className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 py-3 text-sm font-semibold text-white hover:bg-teal-800 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
+            className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 py-3 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
           >
             <FileDown className="h-4 w-4" />
             <span>Baixar Relatório PDF ({filteredEntries.length} leituras)</span>
@@ -230,7 +363,7 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="font-display text-lg font-bold">
-                Pré-visualização do Relatório Clínico
+                Relatório de controle glicêmico
               </h3>
               <p className="mt-0.5 text-xs text-teal-100 font-mono tabular-nums">
                 {formatDateBR(startDate)} a {formatDateBR(endDate)} · Unidade: {settings.unit}
@@ -265,6 +398,16 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
                 </strong>
               </div>
             </div>
+          )}
+
+          {isCustomSlotFilter && effectiveSelectedIds.length > 0 && (
+            <p className="text-xs font-medium text-teal-800">
+              Medições selecionadas:{' '}
+              {slotOptions
+                .filter((o) => selectedSlotSet.has(o.id))
+                .map((o) => o.label)
+                .join(', ')}
+            </p>
           )}
 
           {/* KPI Preview */}
@@ -303,19 +446,21 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
           {/* Matrix Preview */}
           {filteredEntries.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">
-              Nenhuma medição encontrada entre {formatDateBR(startDate)} e {formatDateBR(endDate)}.
+              {effectiveSelectedIds.length === 0
+                ? 'Selecione ao menos uma medição para pré-visualizar.'
+                : `Nenhuma medição encontrada entre ${formatDateBR(startDate)} e ${formatDateBR(endDate)} para os horários selecionados.`}
             </div>
-          ) : includeMatrix ? (
+          ) : includeMatrix && previewMatrixColumns.length > 0 ? (
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full border-collapse text-left text-xs">
                 <thead>
                   <tr className="bg-slate-100 text-slate-700">
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">Data</th>
-                    {activeSchedules.map((s) => (
-                      <th key={s.id} className="px-2.5 py-2.5 text-center font-semibold whitespace-nowrap">
-                        <div>{s.label}</div>
+                    {previewMatrixColumns.map((col) => (
+                      <th key={col.id} className="px-2.5 py-2.5 text-center font-semibold whitespace-nowrap">
+                        <div>{col.label}</div>
                         <div className="font-mono text-[10px] font-normal text-slate-500">
-                          {s.time}
+                          {col.time}
                         </div>
                       </th>
                     ))}
@@ -329,12 +474,12 @@ export const PdfReportView: React.FC<PdfReportViewProps> = ({
                         <td className="px-3 py-2 font-mono font-semibold tabular-nums text-slate-800 whitespace-nowrap">
                           {formatDateBR(d)}
                         </td>
-                        {activeSchedules.map((slot) => {
-                          const match = dayEntries.find((e) => e.slotId === slot.id);
-                          const st = match ? classifyReading(match.value, slot, settings) : null;
+                        {previewMatrixColumns.map((col) => {
+                          const match = dayEntries.find((e) => e.slotId === col.id);
+                          const st = match ? classifyReading(match.value, col.slot, settings) : null;
                           return (
                             <td
-                              key={slot.id}
+                              key={col.id}
                               className={`px-2.5 py-2 text-center font-mono tabular-nums ${
                                 st ? `font-bold ${st.textClass}` : 'text-slate-300'
                               }`}

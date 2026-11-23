@@ -41,6 +41,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigate,
 }) => {
   const [periodDays, setPeriodDays] = useState<PeriodDays>(14);
+  // null = all measurements visible
+  const [selectedSlotIds, setSelectedSlotIds] = useState<string[] | null>(null);
 
   const todayStr = getLocalDateString();
   const activeSchedules = useMemo(
@@ -48,6 +50,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [schedules]
   );
   const slotMap = useMemo(() => new Map(schedules.map((s) => [s.id, s])), [schedules]);
+
+  const slotOptions = useMemo(
+    () => [
+      ...activeSchedules.map((s) => ({ id: s.id, label: s.label })),
+      { id: 'other', label: 'Avulso' },
+    ],
+    [activeSchedules]
+  );
+
+  const allSlotIds = useMemo(() => slotOptions.map((o) => o.id), [slotOptions]);
+
+  const toggleSlotFilter = (slotId: string) => {
+    if (selectedSlotIds === null) {
+      setSelectedSlotIds([slotId]);
+      return;
+    }
+    const next = selectedSlotIds.includes(slotId)
+      ? selectedSlotIds.filter((id) => id !== slotId)
+      : [...selectedSlotIds, slotId];
+
+    if (next.length === 0 || next.length === allSlotIds.length) {
+      setSelectedSlotIds(null);
+    } else {
+      setSelectedSlotIds(next);
+    }
+  };
+
+  const selectedSlotSet = useMemo(
+    () => (selectedSlotIds === null ? null : new Set(selectedSlotIds)),
+    [selectedSlotIds]
+  );
 
   const sortedAll = useMemo(() => sortEntriesDesc(entries), [entries]);
   const latestEntry = sortedAll[0] ?? null;
@@ -59,8 +92,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - (periodDays - 1));
     const cutoffStr = getLocalDateString(cutoff);
-    return sortedAll.filter((e) => e.date >= cutoffStr);
-  }, [sortedAll, periodDays]);
+    return sortedAll.filter(
+      (e) =>
+        e.date >= cutoffStr &&
+        (!selectedSlotSet || selectedSlotSet.has(e.slotId))
+    );
+  }, [sortedAll, periodDays, selectedSlotSet]);
 
   const stats = useMemo(
     () => computeGlucoseStats(periodEntries, schedules, settings),
@@ -84,6 +121,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Measurement Slot Filter Strip */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <span className="text-xs font-semibold text-slate-600 mr-1">
+          Visualizar medições:
+        </span>
+        <button
+          type="button"
+          onClick={() => setSelectedSlotIds(null)}
+          className={`min-h-[34px] rounded-lg border px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+            selectedSlotIds === null
+              ? 'border-teal-700 bg-teal-700 text-white'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+          }`}
+        >
+          Todas
+        </button>
+        {slotOptions.map((opt) => {
+          const active = selectedSlotSet?.has(opt.id) ?? false;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => toggleSlotFilter(opt.id)}
+              className={`min-h-[34px] rounded-lg border px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                active
+                  ? 'border-teal-700 bg-teal-50 text-teal-900'
+                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* KPI Summary Strip */}
       <section aria-label="Resumo glicêmico" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Latest Reading */}
@@ -120,7 +193,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-medium text-slate-500">
-              Média ({periodDays} dias)
+              Média ({periodDays} dias{selectedSlotIds !== null ? ' · filtrado' : ''})
             </span>
             <span className="font-mono text-xs tabular-nums text-slate-500">
               {stats.count} leituras

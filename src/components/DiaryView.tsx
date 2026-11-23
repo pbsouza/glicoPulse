@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Pencil, Trash2, Search, Plus, Check, X } from 'lucide-react';
 import {
-  GlucoseClassification,
   GlucoseEntry,
   PatientSettings,
   ScheduleSlot,
@@ -37,6 +36,8 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
   const [viewMode, setViewMode] = useState<ViewMode>('matrix');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // null = all measurements visible
+  const [selectedSlotIds, setSelectedSlotIds] = useState<string[] | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const activeSchedules = useMemo(
@@ -45,10 +46,55 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
   );
   const slotMap = useMemo(() => new Map(schedules.map((s) => [s.id, s])), [schedules]);
 
+  const slotOptions = useMemo(
+    () => [
+      ...activeSchedules.map((s) => ({
+        id: s.id,
+        label: s.label,
+        time: s.time,
+        slot: s as ScheduleSlot | undefined,
+      })),
+      {
+        id: 'other',
+        label: 'Avulso',
+        time: 'Fora grade',
+        slot: undefined,
+      },
+    ],
+    [activeSchedules]
+  );
+
+  const allSlotIds = useMemo(() => slotOptions.map((o) => o.id), [slotOptions]);
+
+  const toggleSlotFilter = (slotId: string) => {
+    if (selectedSlotIds === null) {
+      setSelectedSlotIds([slotId]);
+      return;
+    }
+    const next = selectedSlotIds.includes(slotId)
+      ? selectedSlotIds.filter((id) => id !== slotId)
+      : [...selectedSlotIds, slotId];
+
+    if (next.length === 0 || next.length === allSlotIds.length) {
+      setSelectedSlotIds(null);
+    } else {
+      setSelectedSlotIds(next);
+    }
+  };
+
+  const selectedSlotSet = useMemo(
+    () => (selectedSlotIds === null ? null : new Set(selectedSlotIds)),
+    [selectedSlotIds]
+  );
+
   const sortedEntries = useMemo(() => sortEntriesDesc(entries), [entries]);
 
   const filteredEntries = useMemo(() => {
     return sortedEntries.filter((entry) => {
+      if (selectedSlotSet && !selectedSlotSet.has(entry.slotId)) {
+        return false;
+      }
+
       const slot = slotMap.get(entry.slotId);
       const info = classifyReading(entry.value, slot, settings);
 
@@ -78,7 +124,30 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
 
       return true;
     });
-  }, [sortedEntries, slotMap, settings, statusFilter, searchQuery]);
+  }, [sortedEntries, selectedSlotSet, slotMap, settings, statusFilter, searchQuery]);
+
+  const matrixColumns = useMemo(() => {
+    const cols = activeSchedules
+      .filter((s) => !selectedSlotSet || selectedSlotSet.has(s.id))
+      .map((s) => ({
+        id: s.id,
+        label: s.label,
+        time: s.time,
+        slot: s as ScheduleSlot | undefined,
+      }));
+
+    const hasOtherEntries = filteredEntries.some((e) => e.slotId === 'other');
+    const explicitOther = selectedSlotSet?.has('other') ?? false;
+    if ((!selectedSlotSet && hasOtherEntries) || explicitOther) {
+      cols.push({
+        id: 'other',
+        label: 'Avulso',
+        time: 'Fora grade',
+        slot: undefined,
+      });
+    }
+    return cols;
+  }, [activeSchedules, selectedSlotSet, filteredEntries]);
 
   const uniqueDates = useMemo(() => {
     return Array.from(new Set(filteredEntries.map((e) => e.date))).sort((a, b) =>
@@ -86,91 +155,121 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
     );
   }, [filteredEntries]);
 
-  const matchesStatus = (status: GlucoseClassification, filter: StatusFilter) => {
-    if (filter === 'all') return true;
-    if (filter === 'in_range') return status === 'in_range';
-    if (filter === 'low') return status === 'low';
-    return status === 'elevated' || status === 'high';
-  };
-  void matchesStatus;
-
   return (
     <div className="space-y-5">
       {/* Toolbar */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Mode Switch */}
-          <div className="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1">
-            <button
-              type="button"
-              onClick={() => setViewMode('matrix')}
-              className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                viewMode === 'matrix'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Grade por Horários
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('list')}
-              className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                viewMode === 'list'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Lista Cronológica
-            </button>
-          </div>
-
-          {/* Status Filter */}
-          <div className="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1">
-            {(
-              [
-                { id: 'all', label: 'Todas' },
-                { id: 'in_range', label: 'Na meta' },
-                { id: 'low', label: 'Baixas' },
-                { id: 'above', label: 'Elevadas' },
-              ] as { id: StatusFilter; label: string }[]
-            ).map((opt) => (
+      <div className="space-y-3.5 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Mode Switch */}
+            <div className="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1">
               <button
-                key={opt.id}
                 type="button"
-                onClick={() => setStatusFilter(opt.id)}
-                className={`min-h-[38px] rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                  statusFilter === opt.id
+                onClick={() => setViewMode('matrix')}
+                className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  viewMode === 'matrix'
                     ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {opt.label}
+                Grade por Horários
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  viewMode === 'list'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Lista Cronológica
+              </button>
+            </div>
+
+            {/* Status Filter */}
+            <div className="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1">
+              {(
+                [
+                  { id: 'all', label: 'Todas' },
+                  { id: 'in_range', label: 'Na meta' },
+                  { id: 'low', label: 'Baixas' },
+                  { id: 'above', label: 'Elevadas' },
+                ] as { id: StatusFilter; label: string }[]
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setStatusFilter(opt.id)}
+                  className={`min-h-[38px] rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                    statusFilter === opt.id
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Search & Add */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 sm:w-64">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar data, horário ou nota..."
+                className="w-full min-h-[42px] rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:bg-white focus:outline-none"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => onOpenNewLog()}
+              className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl bg-teal-700 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-800 transition-colors whitespace-nowrap shrink-0"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Nova Leitura</span>
+            </button>
           </div>
         </div>
 
-        {/* Search & Add */}
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 sm:w-64">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar data, horário ou nota..."
-              className="w-full min-h-[42px] rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:bg-white focus:outline-none"
-            />
-          </div>
+        {/* Measurement Slot Multi-Select Filter */}
+        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-slate-600 mr-1">
+            Medições:
+          </span>
           <button
             type="button"
-            onClick={() => onOpenNewLog()}
-            className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl bg-teal-700 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-800 transition-colors whitespace-nowrap shrink-0"
+            onClick={() => setSelectedSlotIds(null)}
+            className={`min-h-[34px] rounded-lg border px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              selectedSlotIds === null
+                ? 'border-teal-700 bg-teal-700 text-white'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
           >
-            <Plus className="h-4 w-4" />
-            <span>Nova Leitura</span>
+            Todas
           </button>
+          {slotOptions.map((opt) => {
+            const active = selectedSlotSet?.has(opt.id) ?? false;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => toggleSlotFilter(opt.id)}
+                className={`min-h-[34px] rounded-lg border px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  active
+                    ? 'border-teal-700 bg-teal-50 text-teal-900'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -183,20 +282,40 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
           <p className="mt-1 text-sm text-slate-500">
             {entries.length === 0
               ? 'Comece registrando sua primeira leitura de glicemia para construir seu diário.'
-              : 'Tente limpar os filtros ou buscar por outro termo.'}
+              : 'Tente limpar os filtros de horário, status ou busca.'}
           </p>
-          <button
-            type="button"
-            onClick={() => onOpenNewLog()}
-            className="mt-4 inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Registrar Primeira Medição</span>
-          </button>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            {selectedSlotIds !== null && (
+              <button
+                type="button"
+                onClick={() => setSelectedSlotIds(null)}
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Mostrar todas as medições
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenNewLog()}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              <span>{entries.length === 0 ? 'Registrar Primeira Medição' : 'Nova Leitura'}</span>
+            </button>
+          </div>
         </div>
       ) : viewMode === 'matrix' ? (
         /* Matrix View: Days x Configured Schedule Slots */
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/50 px-4 py-2.5 text-xs text-slate-500">
+            <span>
+              Toque em qualquer medição para <strong>editar ou excluir</strong>, ou clique em{' '}
+              <strong>—</strong> para adicionar.
+            </span>
+            <span className="font-mono tabular-nums text-slate-600">
+              {filteredEntries.length} {filteredEntries.length === 1 ? 'registro' : 'registros'}
+            </span>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left">
               <thead>
@@ -204,14 +323,14 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
                   <th className="sticky left-0 z-10 bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-700 whitespace-nowrap border-r border-slate-200">
                     Data
                   </th>
-                  {activeSchedules.map((slot) => (
+                  {matrixColumns.map((col) => (
                     <th
-                      key={slot.id}
+                      key={col.id}
                       className="px-3 py-3 text-center text-xs font-semibold text-slate-700 whitespace-nowrap min-w-[96px]"
                     >
-                      <div>{slot.label}</div>
+                      <div>{col.label}</div>
                       <div className="font-mono text-[11px] font-normal tabular-nums text-slate-500">
-                        {slot.time}
+                        {col.time}
                       </div>
                     </th>
                   ))}
@@ -233,38 +352,37 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
                       <td className="sticky left-0 z-10 bg-white px-4 py-3 font-mono text-xs font-semibold tabular-nums text-slate-900 whitespace-nowrap border-r border-slate-100">
                         {formatDateBR(dateStr)}
                       </td>
-                      {activeSchedules.map((slot) => {
-                        const slotMatches = dayEntries.filter((e) => e.slotId === slot.id);
-                        const primary = slotMatches[0];
-                        const status = primary
-                          ? classifyReading(primary.value, slot, settings)
-                          : null;
+                      {matrixColumns.map((col) => {
+                        const slotMatches = dayEntries.filter((e) => e.slotId === col.id);
 
                         return (
-                          <td key={slot.id} className="px-2 py-2 text-center">
-                            {primary && status ? (
-                              <button
-                                type="button"
-                                onClick={() => onEditEntry(primary)}
-                                title={`${slot.label} · ${primary.time} · ${status.label}${primary.notes ? ` · ${primary.notes}` : ''}`}
-                                className={`inline-flex min-h-[38px] min-w-[68px] flex-col items-center justify-center rounded-lg border px-2.5 py-1 transition-colors hover:opacity-85 ${status.surfaceClass} ${status.borderClass}`}
-                              >
-                                <span
-                                  className={`font-mono text-sm font-bold tabular-nums ${status.textClass}`}
-                                >
-                                  {formatGlucoseValue(primary.value, settings.unit)}
-                                </span>
-                                {slotMatches.length > 1 && (
-                                  <span className="text-[10px] font-medium text-slate-500">
-                                    +{slotMatches.length - 1}
-                                  </span>
-                                )}
-                              </button>
+                          <td key={col.id} className="px-2 py-2 text-center">
+                            {slotMatches.length > 0 ? (
+                              <div className="inline-flex flex-col items-center gap-1">
+                                {slotMatches.map((entry) => {
+                                  const status = classifyReading(entry.value, col.slot, settings);
+                                  return (
+                                    <button
+                                      key={entry.id}
+                                      type="button"
+                                      onClick={() => onEditEntry(entry)}
+                                      title={`${col.label} · ${entry.time} · ${status.label}${entry.notes ? ` · ${entry.notes}` : ''} (Clique para editar ou excluir)`}
+                                      className={`inline-flex min-h-[38px] min-w-[68px] flex-col items-center justify-center rounded-lg border px-2.5 py-1 transition-colors hover:opacity-85 ${status.surfaceClass} ${status.borderClass}`}
+                                    >
+                                      <span
+                                        className={`font-mono text-sm font-bold tabular-nums ${status.textClass}`}
+                                      >
+                                        {formatGlucoseValue(entry.value, settings.unit)}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => onOpenNewLog(slot.id, dateStr)}
-                                aria-label={`Registrar ${slot.label} em ${formatDateBR(dateStr)}`}
+                                onClick={() => onOpenNewLog(col.id, dateStr)}
+                                aria-label={`Registrar ${col.label} em ${formatDateBR(dateStr)}`}
                                 className="inline-flex min-h-[38px] min-w-[44px] items-center justify-center rounded-lg text-slate-300 hover:bg-slate-100 hover:text-teal-700 transition-colors"
                               >
                                 —

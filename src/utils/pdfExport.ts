@@ -17,6 +17,7 @@ export interface PdfExportOptions {
   includeStats: boolean;
   includeMatrix: boolean;
   includeChronologicalList: boolean;
+  selectedSlotIds?: string[];
 }
 
 function renderChartToDataUrl(
@@ -159,20 +160,59 @@ export function generateGlucosePdfReport(
   settings: PatientSettings,
   options: PdfExportOptions
 ): { filename: string; count: number } {
+  const selectedSlotSet = options.selectedSlotIds
+    ? new Set(options.selectedSlotIds)
+    : null;
+
   const filteredEntries = allEntries.filter(
-    (e) => e.date >= options.startDate && e.date <= options.endDate
+    (e) =>
+      e.date >= options.startDate &&
+      e.date <= options.endDate &&
+      (!selectedSlotSet || selectedSlotSet.has(e.slotId))
   );
 
   const orderedAsc = [...filteredEntries].sort((a, b) =>
     `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`)
   );
   const orderedDesc = [...filteredEntries].sort((a, b) =>
-    `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`)
+    `${b.date}T${b.time}`.localeCompare(`${a.date}T${b.time}`)
   );
 
-  const activeSchedules = sortSchedulesAsc(schedules).filter((s) => s.enabled);
+  const activeSchedules = sortSchedulesAsc(schedules).filter(
+    (s) => s.enabled && (!selectedSlotSet || selectedSlotSet.has(s.id))
+  );
+  const includeOtherColumn =
+    (!selectedSlotSet || selectedSlotSet.has('other')) &&
+    filteredEntries.some((e) => e.slotId === 'other');
+
+  const matrixColumns: {
+    id: string;
+    label: string;
+    time?: string;
+    slot?: ScheduleSlot;
+  }[] = [
+    ...activeSchedules.map((s) => ({
+      id: s.id,
+      label: s.label,
+      time: s.time,
+      slot: s,
+    })),
+    ...(includeOtherColumn
+      ? [{ id: 'other', label: 'Avulso', time: 'Fora grade' }]
+      : []),
+  ];
+
   const slotMap = new Map(schedules.map((s) => [s.id, s]));
   const stats = computeGlucoseStats(filteredEntries, schedules, settings);
+
+  const selectedLabels = selectedSlotSet
+    ? [
+        ...sortSchedulesAsc(schedules)
+          .filter((s) => selectedSlotSet.has(s.id))
+          .map((s) => s.label),
+        ...(selectedSlotSet.has('other') ? ['Avulso'] : []),
+      ]
+    : null;
 
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -238,6 +278,16 @@ export function generateGlucosePdfReport(
     );
 
     cursorY += 24;
+  }
+
+  if (selectedLabels && selectedLabels.length > 0) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 118, 110);
+    const filterText = `Medições selecionadas: ${selectedLabels.join(', ')}`;
+    const wrapped = doc.splitTextToSize(filterText, pageWidth - margin * 2);
+    doc.text(wrapped, margin, cursorY);
+    cursorY += wrapped.length * 4 + 3;
   }
 
   // Statistical Summary Section
@@ -330,7 +380,7 @@ export function generateGlucosePdfReport(
   }
 
   // Daily Schedule Matrix Table
-  if (options.includeMatrix && orderedDesc.length > 0 && activeSchedules.length > 0) {
+  if (options.includeMatrix && orderedDesc.length > 0 && matrixColumns.length > 0) {
     if (cursorY > 220) {
       doc.addPage();
       cursorY = 16;
@@ -348,7 +398,9 @@ export function generateGlucosePdfReport(
 
     const headRow = [
       'Data',
-      ...activeSchedules.map((s) => `${s.label}\n(${s.time})`),
+      ...matrixColumns.map((col) =>
+        col.time ? `${col.label}\n(${col.time})` : col.label
+      ),
       'Média',
     ];
 
@@ -359,8 +411,8 @@ export function generateGlucosePdfReport(
           ? dayEntries.reduce((acc, e) => acc + e.value, 0) / dayEntries.length
           : 0;
 
-      const slotCells = activeSchedules.map((slot) => {
-        const matches = dayEntries.filter((e) => e.slotId === slot.id);
+      const slotCells = matrixColumns.map((col) => {
+        const matches = dayEntries.filter((e) => e.slotId === col.id);
         if (matches.length === 0) return '—';
         return matches.map((m) => formatGlucoseValue(m.value, settings.unit)).join(' / ');
       });
@@ -402,15 +454,15 @@ export function generateGlucosePdfReport(
         if (
           hookData.section === 'body' &&
           hookData.column.index > 0 &&
-          hookData.column.index <= activeSchedules.length
+          hookData.column.index <= matrixColumns.length
         ) {
           const text = String(hookData.cell.raw ?? '');
           if (text !== '—') {
             const firstNum = parseFloat(text.split('/')[0].trim());
             const mgVal =
               settings.unit === 'mmol/L' ? Math.round(firstNum * 18.0182) : firstNum;
-            const slot = activeSchedules[hookData.column.index - 1];
-            const info = classifyReading(mgVal, slot, settings);
+            const col = matrixColumns[hookData.column.index - 1];
+            const info = classifyReading(mgVal, col.slot, settings);
             if (info.status === 'low') {
               hookData.cell.styles.textColor = [190, 18, 60];
               hookData.cell.styles.fontStyle = 'bold';

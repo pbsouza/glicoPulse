@@ -566,6 +566,7 @@ export default function App() {
         isOpen={logModalOpen}
         onClose={() => setLogModalOpen(false)}
         onSave={handleSaveEntry}
+        onDelete={handleDeleteEntry}
         schedules={schedules}
         settings={settings}
         editingEntry={editingEntry}

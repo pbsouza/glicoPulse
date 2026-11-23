@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import { GlucoseEntry, PatientSettings, ScheduleSlot } from '../types/glucose';
 import {
   classifyReading,
@@ -15,6 +15,7 @@ interface LogModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (entry: Omit<GlucoseEntry, 'id' | 'createdAt'>, existingId?: string) => void;
+  onDelete?: (id: string) => void;
   schedules: ScheduleSlot[];
   settings: PatientSettings;
   editingEntry?: GlucoseEntry | null;
@@ -26,6 +27,7 @@ export const LogModal: React.FC<LogModalProps> = ({
   isOpen,
   onClose,
   onSave,
+  onDelete,
   schedules,
   settings,
   editingEntry,
@@ -42,9 +44,12 @@ export const LogModal: React.FC<LogModalProps> = ({
   const [carbsInput, setCarbsInput] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
+
+    setConfirmDelete(false);
 
     if (editingEntry) {
       setValueInput(formatGlucoseValue(editingEntry.value, settings.unit));
@@ -133,7 +138,7 @@ export const LogModal: React.FC<LogModalProps> = ({
               {editingEntry ? 'Editar Medição' : 'Registrar Glicemia'}
             </h2>
             <p className="text-xs text-slate-500">
-              Salvo localmente neste dispositivo
+              Sincronizado na sua conta
             </p>
           </div>
           <button
@@ -316,20 +321,60 @@ export const LogModal: React.FC<LogModalProps> = ({
           </div>
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={onClose}
-              className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="min-h-[44px] rounded-xl bg-teal-700 px-6 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
-            >
-              {editingEntry ? 'Salvar Alterações' : 'Salvar Medição'}
-            </button>
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
+            <div>
+              {editingEntry && onDelete && (
+                confirmDelete ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5">
+                    <span className="text-xs font-semibold text-rose-800">
+                      Excluir registro?
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onDelete(editingEntry.id);
+                        onClose();
+                      }}
+                      className="min-h-[34px] rounded-lg bg-rose-700 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-800 transition-colors whitespace-nowrap"
+                    >
+                      Sim, excluir
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      className="min-h-[34px] rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors whitespace-nowrap"
+                    >
+                      Voltar
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(true)}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50/70 px-4 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-100 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span>Excluir</span>
+                  </button>
+                )
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 ml-auto">
+              <button
+                type="button"
+                onClick={onClose}
+                className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="min-h-[44px] rounded-xl bg-teal-700 px-6 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
+              >
+                {editingEntry ? 'Salvar Alterações' : 'Salvar Medição'}
+              </button>
+            </div>
           </div>
         </form>
       </div>
