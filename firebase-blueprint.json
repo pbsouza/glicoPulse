@@ -1,0 +1,272 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authenticated user profile and system access authorization status controlled by the master user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "description": "Verified Google email address",
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name",
+          "maxLength": 120
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User avatar URL",
+          "maxLength": 500
+        },
+        "role": {
+          "type": "string",
+          "enum": ["master", "user"],
+          "description": "Access control role"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "denied"],
+          "description": "System utilization approval status"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "photoURL",
+        "role",
+        "status",
+        "createdAt",
+        "updatedAt",
+        "lastLoginAt"
+      ]
+    },
+    "GlucoseEntry": {
+      "title": "GlucoseEntry",
+      "description": "Individual blood glucose reading stored canonically in mg/dL.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "value": {
+          "type": "number",
+          "description": "Glucose concentration in mg/dL (20 to 700)"
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "time": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^\\d{2}:\\d{2}$"
+        },
+        "slotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "insulinUnits": {
+          "type": "number",
+          "description": "Optional insulin dose in units"
+        },
+        "carbsGrams": {
+          "type": "number",
+          "description": "Optional carbohydrates in grams"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "value",
+        "date",
+        "time",
+        "slotId",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ScheduleSlot": {
+      "title": "ScheduleSlot",
+      "description": "Configurable daily glucose measurement slot with target range.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "time": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^\\d{2}:\\d{2}$"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["fasting", "pre_meal", "post_meal", "bedtime", "other"]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "targetMin": {
+          "type": "number"
+        },
+        "targetMax": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "label",
+        "time",
+        "category",
+        "enabled",
+        "targetMin",
+        "targetMax",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PatientSettings": {
+      "title": "PatientSettings",
+      "description": "Clinical preferences, unit selection, and glycemic thresholds for a user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "patientName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "doctorName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "diabetesInfo": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "unit": {
+          "type": "string",
+          "enum": ["mg/dL", "mmol/L"]
+        },
+        "hypoThreshold": {
+          "type": "number"
+        },
+        "hyperThreshold": {
+          "type": "number"
+        },
+        "severeHyperThreshold": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "patientName",
+        "doctorName",
+        "diabetesInfo",
+        "unit",
+        "hypoThreshold",
+        "hyperThreshold",
+        "severeHyperThreshold",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User access record and RBAC authorization status managed by the master account (belchior87@gmail.com)."
+    },
+    "/users/{userId}/entries/{entryId}": {
+      "schema": { "$ref": "#/entities/GlucoseEntry" },
+      "description": "Private blood glucose measurements belonging to an approved user."
+    },
+    "/users/{userId}/schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/ScheduleSlot" },
+      "description": "Private configurable measurement schedule slots belonging to an approved user."
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PatientSettings" },
+      "description": "Private clinical settings and thresholds belonging to an approved user."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "GlicoPulse",
+  "description": "Web app PWA para controle de glicemia com horários configuráveis, gráficos de tendência, armazenamento local e exportação de relatório clínico em PDF.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

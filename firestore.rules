@@ -1,0 +1,272 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny all paths unless explicitly permitted
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isMaster() {
+      return isVerifiedEmail() && request.auth.token.email == 'belchior87@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isApprovedUser(userId) {
+      return isMaster() || (
+        isOwner(userId) &&
+        exists(/databases/$(database)/documents/users/$(userId)) &&
+        get(/databases/$(database)/documents/users/$(userId)).data.status == 'approved'
+      );
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserAccount(data) {
+      return data.keys().hasAll([
+        'uid', 'email', 'displayName', 'photoURL', 'role', 'status', 'createdAt', 'updatedAt', 'lastLoginAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'email', 'displayName', 'photoURL', 'role', 'status', 'createdAt', 'updatedAt', 'lastLoginAt'
+      ]) &&
+      isValidId(data.uid) &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+      data.displayName is string && data.displayName.size() <= 120 &&
+      data.photoURL is string && data.photoURL.size() <= 500 &&
+      data.role in ['master', 'user'] &&
+      data.status in ['pending', 'approved', 'denied'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp &&
+      data.lastLoginAt is timestamp;
+    }
+
+    function isValidGlucoseEntry(data) {
+      return data.keys().hasAll([
+        'id', 'uid', 'value', 'date', 'time', 'slotId', 'notes', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'uid', 'value', 'date', 'time', 'slotId', 'notes', 'insulinUnits', 'carbsGrams', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.uid) &&
+      data.value is number && data.value >= 20 && data.value <= 700 &&
+      data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+      data.time is string && data.time.size() == 5 && data.time.matches('^\\d{2}:\\d{2}$') &&
+      isValidId(data.slotId) &&
+      data.notes is string && data.notes.size() <= 500 &&
+      (!('insulinUnits' in data) || (data.insulinUnits is number && data.insulinUnits >= 0 && data.insulinUnits <= 500)) &&
+      (!('carbsGrams' in data) || (data.carbsGrams is number && data.carbsGrams >= 0 && data.carbsGrams <= 1000)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidScheduleSlot(data) {
+      return data.keys().hasAll([
+        'id', 'uid', 'label', 'time', 'category', 'enabled', 'targetMin', 'targetMax', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'uid', 'label', 'time', 'category', 'enabled', 'targetMin', 'targetMax', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.uid) &&
+      data.label is string && data.label.size() >= 1 && data.label.size() <= 60 &&
+      data.time is string && data.time.size() == 5 && data.time.matches('^\\d{2}:\\d{2}$') &&
+      data.category in ['fasting', 'pre_meal', 'post_meal', 'bedtime', 'other'] &&
+      data.enabled is bool &&
+      data.targetMin is number && data.targetMin >= 20 && data.targetMin <= 500 &&
+      data.targetMax is number && data.targetMax >= 20 && data.targetMax <= 600 &&
+      data.targetMin <= data.targetMax &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidPatientSettings(data) {
+      return data.keys().hasAll([
+        'uid', 'patientName', 'doctorName', 'diabetesInfo', 'unit', 'hypoThreshold', 'hyperThreshold', 'severeHyperThreshold', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'patientName', 'doctorName', 'diabetesInfo', 'unit', 'hypoThreshold', 'hyperThreshold', 'severeHyperThreshold', 'updatedAt'
+      ]) &&
+      isValidId(data.uid) &&
+      data.patientName is string && data.patientName.size() <= 120 &&
+      data.doctorName is string && data.doctorName.size() <= 120 &&
+      data.diabetesInfo is string && data.diabetesInfo.size() <= 200 &&
+      data.unit in ['mg/dL', 'mmol/L'] &&
+      data.hypoThreshold is number && data.hypoThreshold >= 40 && data.hypoThreshold <= 100 &&
+      data.hyperThreshold is number && data.hyperThreshold >= 120 && data.hyperThreshold <= 300 &&
+      data.severeHyperThreshold is number && data.severeHyperThreshold >= 180 && data.severeHyperThreshold <= 450 &&
+      data.updatedAt is timestamp;
+    }
+
+    // --- Collection: /users/{userId} ---
+    match /users/{userId} {
+      allow get: if isVerifiedEmail() && isValidId(userId) && (isOwner(userId) || isMaster());
+      allow list: if isVerifiedEmail() && isMaster();
+
+      allow create: if isVerifiedEmail() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserAccount(incoming()) &&
+        incoming().uid == userId &&
+        incoming().email == request.auth.token.email &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        incoming().lastLoginAt == request.time &&
+        (
+          (isMaster() && incoming().role == 'master' && incoming().status == 'approved') ||
+          (!isMaster() && incoming().role == 'user' && incoming().status == 'pending')
+        );
+
+      allow update: if isVerifiedEmail() &&
+        isValidId(userId) &&
+        isValidUserAccount(incoming()) &&
+        (
+          // Action 1: Master permits or denies user access
+          (
+            isMaster() &&
+            !isOwner(userId) &&
+            incoming().uid == existing().uid &&
+            incoming().email == existing().email &&
+            incoming().role == existing().role &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          // Action 2: Owner updates profile info & lastLoginAt (cannot escalate role or status)
+          (
+            isOwner(userId) &&
+            incoming().uid == existing().uid &&
+            incoming().email == existing().email &&
+            incoming().role == existing().role &&
+            incoming().status == existing().status &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().lastLoginAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'lastLoginAt', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerifiedEmail() && isValidId(userId) && isMaster() && !isOwner(userId);
+
+      // --- Subcollection: /users/{userId}/entries/{entryId} ---
+      match /entries/{entryId} {
+        allow get: if isVerifiedEmail() && isValidId(userId) && isValidId(entryId) && isOwner(userId) && isApprovedUser(userId);
+        allow list: if isVerifiedEmail() && isOwner(userId) && existing().uid == request.auth.uid;
+
+        allow create: if isVerifiedEmail() &&
+          isValidId(userId) &&
+          isValidId(entryId) &&
+          isOwner(userId) &&
+          isValidGlucoseEntry(incoming()) &&
+          incoming().id == entryId &&
+          incoming().uid == userId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isApprovedUser(userId);
+
+        allow update: if isVerifiedEmail() &&
+          isValidId(userId) &&
+          isValidId(entryId) &&
+          isOwner(userId) &&
+          isValidGlucoseEntry(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'value', 'date', 'time', 'slotId', 'notes', 'insulinUnits', 'carbsGrams', 'updatedAt'
+          ]) &&
+          isApprovedUser(userId);
+
+        allow delete: if isVerifiedEmail() && isValidId(userId) && isValidId(entryId) && isOwner(userId) && isApprovedUser(userId);
+      }
+
+      // --- Subcollection: /users/{userId}/schedules/{scheduleId} ---
+      match /schedules/{scheduleId} {
+        allow get: if isVerifiedEmail() && isValidId(userId) && isValidId(scheduleId) && isOwner(userId) && isApprovedUser(userId);
+        allow list: if isVerifiedEmail() && isOwner(userId) && existing().uid == request.auth.uid;
+
+        allow create: if isVerifiedEmail() &&
+          isValidId(userId) &&
+          isValidId(scheduleId) &&
+          isOwner(userId) &&
+          isValidScheduleSlot(incoming()) &&
+          incoming().id == scheduleId &&
+          incoming().uid == userId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isApprovedUser(userId);
+
+        allow update: if isVerifiedEmail() &&
+          isValidId(userId) &&
+          isValidId(scheduleId) &&
+          isOwner(userId) &&
+          isValidScheduleSlot(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'label', 'time', 'category', 'enabled', 'targetMin', 'targetMax', 'updatedAt'
+          ]) &&
+          isApprovedUser(userId);
+
+        allow delete: if isVerifiedEmail() && isValidId(userId) && isValidId(scheduleId) && isOwner(userId) && isApprovedUser(userId);
+      }
+
+      // --- Subcollection: /users/{userId}/settings/{settingId} ---
+      match /settings/{settingId} {
+        allow get: if isVerifiedEmail() && isValidId(userId) && isValidId(settingId) && isOwner(userId) && isApprovedUser(userId);
+        allow list: if isVerifiedEmail() && isOwner(userId) && existing().uid == request.auth.uid;
+
+        allow create: if isVerifiedEmail() &&
+          isValidId(userId) &&
+          isValidId(settingId) &&
+          settingId == 'preferences' &&
+          isOwner(userId) &&
+          isValidPatientSettings(incoming()) &&
+          incoming().uid == userId &&
+          incoming().updatedAt == request.time &&
+          isApprovedUser(userId);
+
+        allow update: if isVerifiedEmail() &&
+          isValidId(userId) &&
+          isValidId(settingId) &&
+          settingId == 'preferences' &&
+          isOwner(userId) &&
+          isValidPatientSettings(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'patientName', 'doctorName', 'diabetesInfo', 'unit', 'hypoThreshold', 'hyperThreshold', 'severeHyperThreshold', 'updatedAt'
+          ]) &&
+          isApprovedUser(userId);
+
+        allow delete: if isVerifiedEmail() && isValidId(userId) && isValidId(settingId) && isOwner(userId) && isApprovedUser(userId);
+      }
+    }
+  }
+}
