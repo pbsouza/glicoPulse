@@ -430,7 +430,7 @@ export default function App() {
       </header>
 
       {/* Main Content Container */}
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 sm:px-6 pt-6 pb-24 md:pb-12 space-y-6">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 sm:px-6 pt-6 pb-24 md:pb-12 space-y-6 print:max-w-none print:p-0 print:m-0">
         {/* Workspace Subheader + User Identity + PWA Install */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 no-print">
           <div>

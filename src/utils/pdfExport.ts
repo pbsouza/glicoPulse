@@ -20,7 +20,7 @@ export interface PdfExportOptions {
   selectedSlotIds?: string[];
 }
 
-function renderChartToDataUrl(
+export function renderChartToDataUrl(
   entries: GlucoseEntry[],
   settings: PatientSettings
 ): string | null {
