@@ -33,7 +33,7 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
   onEditEntry,
   onDeleteEntry,
 }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('matrix');
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   // null = all measurements visible
@@ -165,17 +165,6 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
             <div className="inline-flex items-center gap-1 rounded-xl bg-slate-100 p-1">
               <button
                 type="button"
-                onClick={() => setViewMode('matrix')}
-                className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                  viewMode === 'matrix'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Grade por Horários
-              </button>
-              <button
-                type="button"
                 onClick={() => setViewMode('list')}
                 className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   viewMode === 'list'
@@ -184,6 +173,17 @@ export const DiaryView: React.FC<DiaryViewProps> = ({
                 }`}
               >
                 Lista Cronológica
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('matrix')}
+                className={`min-h-[38px] rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  viewMode === 'matrix'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Grade por Horários
               </button>
             </div>
 
