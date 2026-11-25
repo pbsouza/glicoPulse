@@ -9,7 +9,7 @@ import {
   Users,
 } from 'lucide-react';
 import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { auth, googleProvider } from './firebase';
+import { auth, googleProvider, isOfflineOrTransientError } from './firebase';
 import {
   GlucoseEntry,
   PatientSettings,
@@ -24,15 +24,18 @@ import {
 import {
   batchSeedEntries,
   clearAllUserEntries,
+  clearCachedUserAccount,
   deleteGlucoseEntry,
   deleteUserAccount,
   ensureUserAccount,
+  getCachedUserAccount,
   isMasterEmail,
   removeScheduleSlot,
   resetSchedulesToDefault,
   saveGlucoseEntry,
   saveUserSettings,
   seedDefaultSchedulesIfNeeded,
+  setBackgroundSyncErrorHandler,
   subscribeAllUsers,
   subscribeUserAccount,
   subscribeUserEntries,
@@ -78,13 +81,20 @@ export default function App() {
     throw runtimeError;
   }
 
-  // 1. Auth state listener & user profile bootstrap
+  // 0. Global background Firestore sync error handler
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    setBackgroundSyncErrorHandler((err) => setRuntimeError(err));
+    return () => setBackgroundSyncErrorHandler(null);
+  }, []);
+
+  // 1. Auth state listener & non-blocking offline-first user profile bootstrap
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       setAuthError(null);
 
       if (!user) {
+        clearCachedUserAccount();
         setUserAccount(null);
         setEntries([]);
         setSchedules(DEFAULT_SCHEDULES);
@@ -95,18 +105,54 @@ export default function App() {
         return;
       }
 
-      setAccountLoading(true);
-      try {
-        await ensureUserAccount(user);
-      } catch (err) {
-        setRuntimeError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        setAuthReady(true);
+      const cached = getCachedUserAccount(user.uid);
+      if (cached) {
+        setUserAccount(cached);
+        setAccountLoading(false);
+      } else if (
+        typeof navigator !== 'undefined' &&
+        !navigator.onLine &&
+        isMasterEmail(user.email) &&
+        user.emailVerified
+      ) {
+        setUserAccount({
+          uid: user.uid,
+          email: user.email ?? '',
+          displayName: user.displayName ?? user.email ?? 'Master',
+          photoURL: user.photoURL ?? '',
+          role: 'master',
+          status: 'approved',
+        });
+        setAccountLoading(false);
+      } else {
+        setAccountLoading(true);
       }
+
+      setAuthReady(true);
+
+      void ensureUserAccount(user).catch((err) => {
+        if (!isOfflineOrTransientError(err)) {
+          setRuntimeError(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
     });
 
     return () => unsubscribe();
   }, []);
+
+  // Re-sync user account record automatically when connectivity returns
+  useEffect(() => {
+    if (!firebaseUser) return;
+    const handleOnline = () => {
+      void ensureUserAccount(firebaseUser).catch((err) => {
+        if (!isOfflineOrTransientError(err)) {
+          setRuntimeError(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [firebaseUser]);
 
   // 2. Real-time user account subscription (access status & role)
   useEffect(() => {
@@ -115,7 +161,27 @@ export default function App() {
     const unsubscribe = subscribeUserAccount(
       firebaseUser.uid,
       (account) => {
-        setUserAccount(account);
+        if (account) {
+          setUserAccount(account);
+        } else if (
+          typeof navigator !== 'undefined' &&
+          !navigator.onLine &&
+          isMasterEmail(firebaseUser.email) &&
+          firebaseUser.emailVerified
+        ) {
+          setUserAccount((prev) =>
+            prev ?? {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email ?? '',
+              displayName: firebaseUser.displayName ?? firebaseUser.email ?? 'Master',
+              photoURL: firebaseUser.photoURL ?? '',
+              role: 'master',
+              status: 'approved',
+            }
+          );
+        } else {
+          setUserAccount(null);
+        }
         setAccountLoading(false);
       },
       (err) => {
@@ -199,6 +265,7 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    clearCachedUserAccount();
     setActiveTab('dashboard');
     await signOut(auth);
   };

@@ -6,6 +6,8 @@ import {
   deleteField,
   doc,
   getDoc,
+  getDocFromCache,
+  getDocsFromCache,
   onSnapshot,
   query,
   serverTimestamp,
@@ -14,7 +16,13 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { MASTER_EMAIL, OperationType, db, handleFirestoreError } from '../firebase';
+import {
+  MASTER_EMAIL,
+  OperationType,
+  db,
+  handleFirestoreError,
+  isOfflineOrTransientError,
+} from '../firebase';
 import {
   GlucoseEntry,
   PatientSettings,
@@ -30,6 +38,100 @@ import {
 } from '../utils/glucoseUtils';
 
 const ID_REGEX = /^[a-zA-Z0-9_\-]+$/;
+const USER_ACCOUNT_CACHE_KEY = 'glicopulse_cached_user_account_v1';
+
+let backgroundSyncErrorHandler: ((err: Error) => void) | null = null;
+
+export function setBackgroundSyncErrorHandler(
+  handler: ((err: Error) => void) | null
+): void {
+  backgroundSyncErrorHandler = handler;
+}
+
+function reportBackgroundSyncError(err: unknown): void {
+  if (isOfflineOrTransientError(err)) return;
+  const wrapped = err instanceof Error ? err : new Error(String(err));
+  if (backgroundSyncErrorHandler) {
+    backgroundSyncErrorHandler(wrapped);
+  }
+}
+
+export function getCachedUserAccount(uid: string): UserAccount | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(USER_ACCOUNT_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<UserAccount>;
+    if (!parsed || parsed.uid !== uid) return null;
+    return {
+      uid: String(parsed.uid),
+      email: String(parsed.email ?? ''),
+      displayName: String(parsed.displayName ?? ''),
+      photoURL: String(parsed.photoURL ?? ''),
+      role: parsed.role === 'master' ? 'master' : 'user',
+      status:
+        parsed.status === 'approved' || parsed.status === 'denied'
+          ? parsed.status
+          : 'pending',
+      createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : undefined,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : undefined,
+      lastLoginAt:
+        typeof parsed.lastLoginAt === 'string' ? parsed.lastLoginAt : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedUserAccount(account: UserAccount): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(USER_ACCOUNT_CACHE_KEY, JSON.stringify(account));
+  } catch {
+    // Ignore storage quota / private mode failures
+  }
+}
+
+export function clearCachedUserAccount(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(USER_ACCOUNT_CACHE_KEY);
+  } catch {
+    // Ignore storage failures
+  }
+}
+
+/**
+ * Ensures writes enqueue immediately into Firestore's persistent IndexedDB outbox
+ * without blocking UI actions while offline or during transient connectivity drops.
+ */
+async function commitFirestoreWrite(
+  writePromise: Promise<void>,
+  operationType: OperationType,
+  path: string
+): Promise<void> {
+  const guarded = writePromise.catch((error) => {
+    handleFirestoreError(error, operationType, path);
+  });
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    void guarded.catch(reportBackgroundSyncError);
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    return;
+  }
+
+  let settled = false;
+  await Promise.race([
+    guarded.then(() => {
+      settled = true;
+    }),
+    new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+  ]);
+
+  if (!settled) {
+    void guarded.catch(reportBackgroundSyncError);
+  }
+}
 
 function sanitizeId(raw: string, fallbackPrefix: string): string {
   const cleaned = raw.replace(/[^a-zA-Z0-9_\-]/g, '-').slice(0, 128);
@@ -67,28 +169,65 @@ export async function ensureUserAccount(user: User): Promise<void> {
   const isMaster = isMasterEmail(user.email) && user.emailVerified;
 
   try {
+    let cachedSnap = null;
+    try {
+      cachedSnap = await getDocFromCache(ref);
+    } catch {
+      cachedSnap = null;
+    }
+
+    if (cachedSnap && cachedSnap.exists()) {
+      const cachedData = cachedSnap.data({ serverTimestamps: 'estimate' });
+      void commitFirestoreWrite(
+        updateDoc(ref, {
+          displayName: clampString(user.displayName ?? cachedData.displayName ?? '', 120),
+          photoURL: clampString(user.photoURL ?? cachedData.photoURL ?? '', 500),
+          lastLoginAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        OperationType.UPDATE,
+        path
+      ).catch(reportBackgroundSyncError);
+      return;
+    }
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return;
+    }
+
     const snap = await getDoc(ref);
     if (!snap.exists()) {
-      await setDoc(ref, {
-        uid: user.uid,
-        email: clampString(user.email ?? '', 200),
-        displayName: clampString(user.displayName ?? user.email ?? 'Usuário', 120),
-        photoURL: clampString(user.photoURL ?? '', 500),
-        role: isMaster ? 'master' : 'user',
-        status: isMaster ? 'approved' : 'pending',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        lastLoginAt: serverTimestamp(),
-      });
+      await commitFirestoreWrite(
+        setDoc(ref, {
+          uid: user.uid,
+          email: clampString(user.email ?? '', 200),
+          displayName: clampString(user.displayName ?? user.email ?? 'Usuário', 120),
+          photoURL: clampString(user.photoURL ?? '', 500),
+          role: isMaster ? 'master' : 'user',
+          status: isMaster ? 'approved' : 'pending',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          lastLoginAt: serverTimestamp(),
+        }),
+        OperationType.CREATE,
+        path
+      );
     } else {
-      await updateDoc(ref, {
-        displayName: clampString(user.displayName ?? snap.data().displayName ?? '', 120),
-        photoURL: clampString(user.photoURL ?? snap.data().photoURL ?? '', 500),
-        lastLoginAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await commitFirestoreWrite(
+        updateDoc(ref, {
+          displayName: clampString(user.displayName ?? snap.data().displayName ?? '', 120),
+          photoURL: clampString(user.photoURL ?? snap.data().photoURL ?? '', 500),
+          lastLoginAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        OperationType.UPDATE,
+        path
+      );
     }
   } catch (error) {
+    if (isOfflineOrTransientError(error)) {
+      return;
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
@@ -101,13 +240,27 @@ export function subscribeUserAccount(
   const path = `users/${uid}`;
   return onSnapshot(
     doc(db, 'users', uid),
+    { includeMetadataChanges: true },
     (snap) => {
       if (!snap.exists()) {
+        if (snap.metadata.fromCache) {
+          const fallback = getCachedUserAccount(uid);
+          if (fallback) {
+            onData(fallback);
+            return;
+          }
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            onData(null);
+          }
+          return;
+        }
+        clearCachedUserAccount();
         onData(null);
         return;
       }
-      const d = snap.data();
-      onData({
+
+      const d = snap.data({ serverTimestamps: 'estimate' });
+      const account: UserAccount = {
         uid: String(d.uid),
         email: String(d.email ?? ''),
         displayName: String(d.displayName ?? ''),
@@ -118,9 +271,18 @@ export function subscribeUserAccount(
         createdAt: timestampToIso(d.createdAt),
         updatedAt: timestampToIso(d.updatedAt),
         lastLoginAt: timestampToIso(d.lastLoginAt),
-      });
+      };
+      setCachedUserAccount(account);
+      onData(account);
     },
     (error) => {
+      if (isOfflineOrTransientError(error)) {
+        const fallback = getCachedUserAccount(uid);
+        if (fallback) {
+          onData(fallback);
+          return;
+        }
+      }
       try {
         handleFirestoreError(error, OperationType.GET, path);
       } catch (wrapped) {
@@ -137,9 +299,10 @@ export function subscribeAllUsers(
   const path = 'users';
   return onSnapshot(
     collection(db, 'users'),
+    { includeMetadataChanges: true },
     (snap) => {
       const list: UserAccount[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
+        const d = docSnap.data({ serverTimestamps: 'estimate' });
         return {
           uid: String(d.uid ?? docSnap.id),
           email: String(d.email ?? ''),
@@ -181,23 +344,23 @@ export async function updateUserAccessStatus(
   status: UserAccessStatus
 ): Promise<void> {
   const path = `users/${targetUid}`;
-  try {
-    await updateDoc(doc(db, 'users', targetUid), {
+  await commitFirestoreWrite(
+    updateDoc(doc(db, 'users', targetUid), {
       status,
       updatedAt: serverTimestamp(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
-  }
+    }),
+    OperationType.UPDATE,
+    path
+  );
 }
 
 export async function deleteUserAccount(targetUid: string): Promise<void> {
   const path = `users/${targetUid}`;
-  try {
-    await deleteDoc(doc(db, 'users', targetUid));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  await commitFirestoreWrite(
+    deleteDoc(doc(db, 'users', targetUid)),
+    OperationType.DELETE,
+    path
+  );
 }
 
 // --- Entries ---
@@ -211,9 +374,10 @@ export function subscribeUserEntries(
 
   return onSnapshot(
     q,
+    { includeMetadataChanges: true },
     (snap) => {
       const items: GlucoseEntry[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
+        const d = docSnap.data({ serverTimestamps: 'estimate' });
         return {
           id: String(d.id ?? docSnap.id),
           value: Number(d.value),
@@ -261,68 +425,60 @@ export async function saveGlucoseEntry(
   const sanitizedSlotId = sanitizeId(payload.slotId || 'other', 'slot');
   const sanitizedNotes = clampString(payload.notes, 500);
 
-  try {
-    if (existingId) {
-      const updatePayload: Record<string, unknown> = {
-        value: sanitizedValue,
-        date: sanitizedDate,
-        time: sanitizedTime,
-        slotId: sanitizedSlotId,
-        notes: sanitizedNotes,
-        updatedAt: serverTimestamp(),
-      };
+  if (existingId) {
+    const updatePayload: Record<string, unknown> = {
+      value: sanitizedValue,
+      date: sanitizedDate,
+      time: sanitizedTime,
+      slotId: sanitizedSlotId,
+      notes: sanitizedNotes,
+      updatedAt: serverTimestamp(),
+    };
 
-      if (payload.insulinUnits !== undefined) {
-        updatePayload.insulinUnits = clampNumber(payload.insulinUnits, 0, 500, 0);
-      } else {
-        updatePayload.insulinUnits = deleteField();
-      }
-
-      if (payload.carbsGrams !== undefined) {
-        updatePayload.carbsGrams = clampNumber(payload.carbsGrams, 0, 1000, 0);
-      } else {
-        updatePayload.carbsGrams = deleteField();
-      }
-
-      await updateDoc(ref, updatePayload);
+    if (payload.insulinUnits !== undefined) {
+      updatePayload.insulinUnits = clampNumber(payload.insulinUnits, 0, 500, 0);
     } else {
-      const createPayload: Record<string, unknown> = {
-        id: entryId,
-        uid,
-        value: sanitizedValue,
-        date: sanitizedDate,
-        time: sanitizedTime,
-        slotId: sanitizedSlotId,
-        notes: sanitizedNotes,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-
-      if (payload.insulinUnits !== undefined) {
-        createPayload.insulinUnits = clampNumber(payload.insulinUnits, 0, 500, 0);
-      }
-      if (payload.carbsGrams !== undefined) {
-        createPayload.carbsGrams = clampNumber(payload.carbsGrams, 0, 1000, 0);
-      }
-
-      await setDoc(ref, createPayload);
+      updatePayload.insulinUnits = deleteField();
     }
-  } catch (error) {
-    handleFirestoreError(
-      error,
-      existingId ? OperationType.UPDATE : OperationType.CREATE,
-      path
-    );
+
+    if (payload.carbsGrams !== undefined) {
+      updatePayload.carbsGrams = clampNumber(payload.carbsGrams, 0, 1000, 0);
+    } else {
+      updatePayload.carbsGrams = deleteField();
+    }
+
+    await commitFirestoreWrite(updateDoc(ref, updatePayload), OperationType.UPDATE, path);
+  } else {
+    const createPayload: Record<string, unknown> = {
+      id: entryId,
+      uid,
+      value: sanitizedValue,
+      date: sanitizedDate,
+      time: sanitizedTime,
+      slotId: sanitizedSlotId,
+      notes: sanitizedNotes,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    if (payload.insulinUnits !== undefined) {
+      createPayload.insulinUnits = clampNumber(payload.insulinUnits, 0, 500, 0);
+    }
+    if (payload.carbsGrams !== undefined) {
+      createPayload.carbsGrams = clampNumber(payload.carbsGrams, 0, 1000, 0);
+    }
+
+    await commitFirestoreWrite(setDoc(ref, createPayload), OperationType.CREATE, path);
   }
 }
 
 export async function deleteGlucoseEntry(uid: string, entryId: string): Promise<void> {
   const path = `users/${uid}/entries/${entryId}`;
-  try {
-    await deleteDoc(doc(db, 'users', uid, 'entries', entryId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  await commitFirestoreWrite(
+    deleteDoc(doc(db, 'users', uid, 'entries', entryId)),
+    OperationType.DELETE,
+    path
+  );
 }
 
 export async function clearAllUserEntries(
@@ -331,17 +487,13 @@ export async function clearAllUserEntries(
 ): Promise<void> {
   if (entries.length === 0) return;
   const path = `users/${uid}/entries`;
-  try {
-    const chunkSize = 400;
-    for (let i = 0; i < entries.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      for (const entry of entries.slice(i, i + chunkSize)) {
-        batch.delete(doc(db, 'users', uid, 'entries', entry.id));
-      }
-      await batch.commit();
+  const chunkSize = 400;
+  for (let i = 0; i < entries.length; i += chunkSize) {
+    const batch = writeBatch(db);
+    for (const entry of entries.slice(i, i + chunkSize)) {
+      batch.delete(doc(db, 'users', uid, 'entries', entry.id));
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
+    await commitFirestoreWrite(batch.commit(), OperationType.DELETE, path);
   }
 }
 
@@ -356,13 +508,15 @@ export function subscribeUserSchedules(
 
   return onSnapshot(
     q,
+    { includeMetadataChanges: true },
     (snap) => {
       if (snap.empty) {
-        onData(DEFAULT_SCHEDULES, true);
+        // Only treat as genuinely empty in DB when confirmed by the server
+        onData(DEFAULT_SCHEDULES, !snap.metadata.fromCache);
         return;
       }
       const slots: ScheduleSlot[] = snap.docs.map((docSnap) => {
-        const d = docSnap.data();
+        const d = docSnap.data({ serverTimestamps: 'estimate' });
         return {
           id: String(d.id ?? docSnap.id),
           label: String(d.label ?? 'Horário'),
@@ -387,94 +541,25 @@ export function subscribeUserSchedules(
 
 export async function seedDefaultSchedulesIfNeeded(uid: string): Promise<void> {
   const path = `users/${uid}/schedules`;
-  try {
-    const batch = writeBatch(db);
-    for (const slot of DEFAULT_SCHEDULES) {
-      const ref = doc(db, 'users', uid, 'schedules', slot.id);
-      batch.set(ref, {
-        id: slot.id,
-        uid,
-        label: clampString(slot.label, 60),
-        time: slot.time,
-        category: slot.category,
-        enabled: slot.enabled,
-        targetMin: clampNumber(slot.targetMin, 20, 500, 70),
-        targetMax: clampNumber(slot.targetMax, 20, 600, 180),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  const batch = writeBatch(db);
+  for (const slot of DEFAULT_SCHEDULES) {
+    const ref = doc(db, 'users', uid, 'schedules', slot.id);
+    batch.set(ref, {
+      id: slot.id,
+      uid,
+      label: clampString(slot.label, 60),
+      time: slot.time,
+      category: slot.category,
+      enabled: slot.enabled,
+      targetMin: clampNumber(slot.targetMin, 20, 500, 70),
+      targetMax: clampNumber(slot.targetMax, 20, 600, 180),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   }
+  await commitFirestoreWrite(batch.commit(), OperationType.WRITE, path);
 }
 
-export async function syncSchedulesToFirestore(
-  uid: string,
-  nextSchedules: ScheduleSlot[],
-  prevSchedules: ScheduleSlot[]
-): Promise<void> {
-  const path = `users/${uid}/schedules`;
-  try {
-    const batch = writeBatch(db);
-    const nextIds = new Set(nextSchedules.map((s) => s.id));
-    const prevMap = new Map(prevSchedules.map((s) => [s.id, s]));
-
-    for (const prev of prevSchedules) {
-      if (!nextIds.has(prev.id)) {
-        batch.delete(doc(db, 'users', uid, 'schedules', prev.id));
-      }
-    }
-
-    for (const slot of nextSchedules) {
-      const slotId = sanitizeId(slot.id, 'slot');
-      const ref = doc(db, 'users', uid, 'schedules', slotId);
-      const minVal = clampNumber(slot.targetMin, 20, 500, 70);
-      const maxVal = Math.max(minVal, clampNumber(slot.targetMax, 20, 600, 180));
-      const cleanLabel = clampString(slot.label, 60) || 'Horário';
-      const cleanTime = /^\d{2}:\d{2}$/.test(slot.time) ? slot.time : '08:00';
-
-      if (prevMap.has(slot.id)) {
-        batch.set(
-          ref,
-          {
-            id: slotId,
-            uid,
-            label: cleanLabel,
-            time: cleanTime,
-            category: slot.category,
-            enabled: Boolean(slot.enabled),
-            targetMin: minVal,
-            targetMax: maxVal,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: false }
-        );
-      } else {
-        batch.set(ref, {
-          id: slotId,
-          uid,
-          label: cleanLabel,
-          time: cleanTime,
-          category: slot.category,
-          enabled: Boolean(slot.enabled),
-          targetMin: minVal,
-          targetMax: maxVal,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    }
-
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
-}
-
-// Simpler, safer atomic slot mutations that respect createdAt immutability on existing docs
 export async function upsertScheduleSlot(
   uid: string,
   slot: ScheduleSlot,
@@ -488,9 +573,9 @@ export async function upsertScheduleSlot(
   const cleanLabel = clampString(slot.label, 60) || 'Horário';
   const cleanTime = /^\d{2}:\d{2}$/.test(slot.time) ? slot.time : '08:00';
 
-  try {
-    if (isExisting) {
-      await updateDoc(ref, {
+  if (isExisting) {
+    await commitFirestoreWrite(
+      updateDoc(ref, {
         label: cleanLabel,
         time: cleanTime,
         category: slot.category,
@@ -498,9 +583,13 @@ export async function upsertScheduleSlot(
         targetMin: minVal,
         targetMax: maxVal,
         updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(ref, {
+      }),
+      OperationType.UPDATE,
+      path
+    );
+  } else {
+    await commitFirestoreWrite(
+      setDoc(ref, {
         id: slotId,
         uid,
         label: cleanLabel,
@@ -511,12 +600,8 @@ export async function upsertScheduleSlot(
         targetMax: maxVal,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(
-      error,
-      isExisting ? OperationType.UPDATE : OperationType.CREATE,
+      }),
+      OperationType.CREATE,
       path
     );
   }
@@ -524,11 +609,11 @@ export async function upsertScheduleSlot(
 
 export async function removeScheduleSlot(uid: string, slotId: string): Promise<void> {
   const path = `users/${uid}/schedules/${slotId}`;
-  try {
-    await deleteDoc(doc(db, 'users', uid, 'schedules', slotId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  await commitFirestoreWrite(
+    deleteDoc(doc(db, 'users', uid, 'schedules', slotId)),
+    OperationType.DELETE,
+    path
+  );
 }
 
 export async function resetSchedulesToDefault(
@@ -536,49 +621,54 @@ export async function resetSchedulesToDefault(
   currentSchedules: ScheduleSlot[]
 ): Promise<void> {
   const path = `users/${uid}/schedules`;
+  let persistedIds = new Set<string>();
   try {
-    const batch = writeBatch(db);
-    const defaultIds = new Set(DEFAULT_SCHEDULES.map((d) => d.id));
-    const currentIds = new Set(currentSchedules.map((c) => c.id));
-
-    for (const current of currentSchedules) {
-      if (!defaultIds.has(current.id)) {
-        batch.delete(doc(db, 'users', uid, 'schedules', current.id));
-      }
-    }
-
-    for (const def of DEFAULT_SCHEDULES) {
-      const ref = doc(db, 'users', uid, 'schedules', def.id);
-      if (currentIds.has(def.id)) {
-        batch.update(ref, {
-          label: def.label,
-          time: def.time,
-          category: def.category,
-          enabled: def.enabled,
-          targetMin: def.targetMin,
-          targetMax: def.targetMax,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        batch.set(ref, {
-          id: def.id,
-          uid,
-          label: def.label,
-          time: def.time,
-          category: def.category,
-          enabled: def.enabled,
-          targetMin: def.targetMin,
-          targetMax: def.targetMax,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    }
-
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+    const cachedSnap = await getDocsFromCache(
+      query(collection(db, 'users', uid, 'schedules'), where('uid', '==', uid))
+    );
+    persistedIds = new Set(cachedSnap.docs.map((d) => d.id));
+  } catch {
+    persistedIds = new Set(currentSchedules.map((c) => c.id));
   }
+
+  const batch = writeBatch(db);
+  const defaultIds = new Set(DEFAULT_SCHEDULES.map((d) => d.id));
+
+  for (const existingId of persistedIds) {
+    if (!defaultIds.has(existingId)) {
+      batch.delete(doc(db, 'users', uid, 'schedules', existingId));
+    }
+  }
+
+  for (const def of DEFAULT_SCHEDULES) {
+    const ref = doc(db, 'users', uid, 'schedules', def.id);
+    if (persistedIds.has(def.id)) {
+      batch.update(ref, {
+        label: def.label,
+        time: def.time,
+        category: def.category,
+        enabled: def.enabled,
+        targetMin: def.targetMin,
+        targetMax: def.targetMax,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(ref, {
+        id: def.id,
+        uid,
+        label: def.label,
+        time: def.time,
+        category: def.category,
+        enabled: def.enabled,
+        targetMin: def.targetMin,
+        targetMax: def.targetMax,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  }
+
+  await commitFirestoreWrite(batch.commit(), OperationType.WRITE, path);
 }
 
 // --- Settings ---
@@ -590,12 +680,13 @@ export function subscribeUserSettings(
   const path = `users/${uid}/settings/preferences`;
   return onSnapshot(
     doc(db, 'users', uid, 'settings', 'preferences'),
+    { includeMetadataChanges: true },
     (snap) => {
       if (!snap.exists()) {
         onData(DEFAULT_SETTINGS);
         return;
       }
-      const d = snap.data();
+      const d = snap.data({ serverTimestamps: 'estimate' });
       onData({
         patientName: String(d.patientName ?? ''),
         doctorName: String(d.doctorName ?? ''),
@@ -621,8 +712,8 @@ export async function saveUserSettings(
   settings: PatientSettings
 ): Promise<void> {
   const path = `users/${uid}/settings/preferences`;
-  try {
-    await setDoc(doc(db, 'users', uid, 'settings', 'preferences'), {
+  await commitFirestoreWrite(
+    setDoc(doc(db, 'users', uid, 'settings', 'preferences'), {
       uid,
       patientName: clampString(settings.patientName, 120),
       doctorName: clampString(settings.doctorName, 120),
@@ -632,10 +723,10 @@ export async function saveUserSettings(
       hyperThreshold: clampNumber(settings.hyperThreshold, 120, 300, 180),
       severeHyperThreshold: clampNumber(settings.severeHyperThreshold, 180, 450, 250),
       updatedAt: serverTimestamp(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+    }),
+    OperationType.WRITE,
+    path
+  );
 }
 
 export async function batchSeedEntries(
@@ -644,37 +735,33 @@ export async function batchSeedEntries(
 ): Promise<void> {
   if (entries.length === 0) return;
   const path = `users/${uid}/entries`;
-  try {
-    const chunkSize = 400;
-    for (let i = 0; i < entries.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      for (const entry of entries.slice(i, i + chunkSize)) {
-        const entryId = sanitizeId(entry.id, 'entry');
-        const ref = doc(db, 'users', uid, 'entries', entryId);
-        const docPayload: Record<string, unknown> = {
-          id: entryId,
-          uid,
-          value: clampNumber(entry.value, 20, 700, 100),
-          date: /^\d{4}-\d{2}-\d{2}$/.test(entry.date)
-            ? entry.date
-            : new Date().toISOString().slice(0, 10),
-          time: /^\d{2}:\d{2}$/.test(entry.time) ? entry.time : '08:00',
-          slotId: sanitizeId(entry.slotId || 'other', 'slot'),
-          notes: clampString(entry.notes, 500),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-        if (entry.insulinUnits !== undefined) {
-          docPayload.insulinUnits = clampNumber(entry.insulinUnits, 0, 500, 0);
-        }
-        if (entry.carbsGrams !== undefined) {
-          docPayload.carbsGrams = clampNumber(entry.carbsGrams, 0, 1000, 0);
-        }
-        batch.set(ref, docPayload);
+  const chunkSize = 400;
+  for (let i = 0; i < entries.length; i += chunkSize) {
+    const batch = writeBatch(db);
+    for (const entry of entries.slice(i, i + chunkSize)) {
+      const entryId = sanitizeId(entry.id, 'entry');
+      const ref = doc(db, 'users', uid, 'entries', entryId);
+      const docPayload: Record<string, unknown> = {
+        id: entryId,
+        uid,
+        value: clampNumber(entry.value, 20, 700, 100),
+        date: /^\d{4}-\d{2}-\d{2}$/.test(entry.date)
+          ? entry.date
+          : new Date().toISOString().slice(0, 10),
+        time: /^\d{2}:\d{2}$/.test(entry.time) ? entry.time : '08:00',
+        slotId: sanitizeId(entry.slotId || 'other', 'slot'),
+        notes: clampString(entry.notes, 500),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (entry.insulinUnits !== undefined) {
+        docPayload.insulinUnits = clampNumber(entry.insulinUnits, 0, 500, 0);
       }
-      await batch.commit();
+      if (entry.carbsGrams !== undefined) {
+        docPayload.carbsGrams = clampNumber(entry.carbsGrams, 0, 1000, 0);
+      }
+      batch.set(ref, docPayload);
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+    await commitFirestoreWrite(batch.commit(), OperationType.CREATE, path);
   }
 }
